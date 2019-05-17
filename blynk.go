@@ -18,8 +18,7 @@ import (
 	"time"
 )
 
-const Version = "0.0.1"
-const certsPath = "certs"
+const Version = "0.0.2"
 
 type Blynk struct {
 	APIkey     string
@@ -32,6 +31,7 @@ type Blynk struct {
 	timeout    time.Duration
 	timeoutMAX time.Duration
 	lock       sync.Mutex
+	CertsPath  string
 	ca         string
 	ssl        bool
 	cancel     chan bool
@@ -47,6 +47,7 @@ func NewBlynk(APIkey string, Server string, Port int, SSL bool) *Blynk {
 		timeout:    time.Millisecond * 50,
 		timeoutMAX: time.Second * 5,
 		lock:       sync.Mutex{},
+		CertsPath:  "certs",
 		ca:         "server.crt",
 		ssl:        SSL,
 		cancel:     make(chan bool, 1),
@@ -89,7 +90,7 @@ func (g *Blynk) Connect() error {
 	if err = g.auth(); err != nil {
 		return err
 	}
-	log.Printf("Connect: Auth success")
+	log.Printf("Connect: Auth success (SSL: %v)", g.ssl)
 
 	g.sendInternal()
 	return nil
@@ -120,11 +121,11 @@ func (g *Blynk) dialTLS(addr *net.TCPAddr) (*tls.Conn, error) {
 }
 
 func (g *Blynk) loadCA() ([]byte, error) {
-	_, err := os.Stat(fmt.Sprintf("%s//%s", certsPath, g.ca))
+	_, err := os.Stat(fmt.Sprintf("%s//%s", g.CertsPath, g.ca))
 	if os.IsNotExist(err) {
 		return nil, err
 	}
-	b, err := ioutil.ReadFile(fmt.Sprintf("%s//%s", certsPath, g.ca))
+	b, err := ioutil.ReadFile(fmt.Sprintf("%s//%s", g.CertsPath, g.ca))
 	if err != nil {
 		return nil, err
 	}
