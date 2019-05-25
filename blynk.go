@@ -7,18 +7,18 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	certs "github.com/OloloevReal/go-blynk/certs"
 )
 
-const Version = "0.0.2"
+const Version = "0.0.3"
 
 type Blynk struct {
 	APIkey     string
@@ -31,8 +31,6 @@ type Blynk struct {
 	timeout    time.Duration
 	timeoutMAX time.Duration
 	lock       sync.Mutex
-	CertsPath  string
-	ca         string
 	ssl        bool
 	cancel     chan bool
 }
@@ -47,8 +45,6 @@ func NewBlynk(APIkey string, Server string, Port int, SSL bool) *Blynk {
 		timeout:    time.Millisecond * 50,
 		timeoutMAX: time.Second * 5,
 		lock:       sync.Mutex{},
-		CertsPath:  "certs",
-		ca:         "server.crt",
 		ssl:        SSL,
 		cancel:     make(chan bool, 1),
 	}
@@ -121,15 +117,7 @@ func (g *Blynk) dialTLS(addr *net.TCPAddr) (*tls.Conn, error) {
 }
 
 func (g *Blynk) loadCA() ([]byte, error) {
-	_, err := os.Stat(fmt.Sprintf("%s//%s", g.CertsPath, g.ca))
-	if os.IsNotExist(err) {
-		return nil, err
-	}
-	b, err := ioutil.ReadFile(fmt.Sprintf("%s//%s", g.CertsPath, g.ca))
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
+	return []byte(certs.CertServer), nil
 }
 
 func (g *Blynk) Processing() {

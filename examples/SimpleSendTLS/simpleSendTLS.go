@@ -15,7 +15,6 @@ func main() {
 	flag.Parse()
 
 	app := blynk.NewBlynk(*auth, "blynk-cloud.com", 443, true)
-	app.CertsPath = "../../certs"
 
 	if err := app.Connect(); err != nil {
 		log.Fatalln(err)

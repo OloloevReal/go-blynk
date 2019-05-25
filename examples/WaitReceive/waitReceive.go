@@ -21,7 +21,7 @@ func main() {
 	auth := flag.String("auth", "", "set -auth=blynk_token")
 	flag.Parse()
 
-	app := blynk.NewBlynk(*auth, "blynk-cloud.com", 80, false)
+	app := blynk.NewBlynk(*auth, "blynk-cloud.com", 443, true)
 
 	go func() {
 		stop := make(chan os.Signal, 1)
