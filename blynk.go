@@ -21,36 +21,46 @@ import (
 const Version = "0.0.3"
 
 type Blynk struct {
-	APIkey     string
-	server     string
-	port       int
-	OnReadFunc func(*BlynkRespose)
-	conn       net.Conn
-	msgID      uint16
-	heartbeat  time.Duration
-	timeout    time.Duration
-	timeoutMAX time.Duration
-	lock       sync.Mutex
-	ssl        bool
-	cancel     chan bool
+	APIkey      string
+	server      string
+	port        int
+	OnReadFunc  func(*BlynkRespose)
+	conn        net.Conn
+	msgID       uint16
+	disableLogo bool
+	heartbeat   time.Duration
+	timeout     time.Duration
+	timeoutMAX  time.Duration
+	lock        sync.Mutex
+	ssl         bool
+	cancel      chan bool
 }
 
 func NewBlynk(APIkey string, Server string, Port int, SSL bool) *Blynk {
 	return &Blynk{APIkey: APIkey,
-		server:     Server,
-		port:       Port,
-		conn:       nil,
-		msgID:      0,
-		heartbeat:  time.Second * 10,
-		timeout:    time.Millisecond * 50,
-		timeoutMAX: time.Second * 5,
-		lock:       sync.Mutex{},
-		ssl:        SSL,
-		cancel:     make(chan bool, 1),
+		server:      Server,
+		port:        Port,
+		conn:        nil,
+		msgID:       0,
+		disableLogo: false,
+		heartbeat:   time.Second * 10,
+		timeout:     time.Millisecond * 50,
+		timeoutMAX:  time.Second * 5,
+		lock:        sync.Mutex{},
+		ssl:         SSL,
+		cancel:      make(chan bool, 1),
 	}
 }
 
+func (g *Blynk) DisableLogo(state bool) {
+	g.disableLogo = state
+}
+
 func (g *Blynk) printLogo() {
+	if g.disableLogo {
+		return
+	}
+
 	logo := `
      ___  __          __
     / _ )/ /_ _____  / /__

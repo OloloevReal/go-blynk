@@ -15,6 +15,7 @@ func main() {
 	flag.Parse()
 
 	app := blynk.NewBlynk(*auth, "blynk-cloud.com", 80, false)
+	//app.DisableLogo(true)
 
 	if err := app.Connect(); err != nil {
 		log.Fatalln(err)
