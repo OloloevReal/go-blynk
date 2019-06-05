@@ -2,30 +2,33 @@ package main
 
 import (
 	"flag"
-	"log"
 
 	blynk "github.com/OloloevReal/go-blynk"
+	slog "github.com/OloloevReal/go-simple-log"
 )
 
 func main() {
-	log.Printf("Blynk starting, version %s", blynk.Version)
-	defer log.Printf("Go Blynk finished")
+	slog.Printf("Blynk starting, version %s", blynk.Version)
+	defer slog.Println("Go Blynk finished")
 
 	auth := flag.String("auth", "", "set -auth=blynk_token")
+	email := flag.String("email", "", "set -email=someemail@gmail.com")
+	_ = email
+
 	flag.Parse()
 
-	app := blynk.NewBlynk(*auth, "blynk-cloud.com", 443, true)
+	app := blynk.NewBlynk(*auth, true)
 
 	if err := app.Connect(); err != nil {
-		log.Fatalln(err)
+		slog.Fatalln(err)
 	}
 	defer app.Disconnect()
 
 	if err := app.VirtualWrite(9, "7.654"); err != nil {
-		log.Println("Send command failed")
+		slog.Printf("[ERROR] Send command failed")
 	}
 	if err := app.VirtualWrite(12, "4.567"); err != nil {
-		log.Println("Send command failed")
+		slog.Printf("[ERROR] Send command failed")
 	}
 
 }
