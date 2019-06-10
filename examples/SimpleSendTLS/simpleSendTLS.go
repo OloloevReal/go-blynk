@@ -17,7 +17,7 @@ func main() {
 
 	flag.Parse()
 
-	app := blynk.NewBlynk(*auth, true)
+	app := blynk.NewBlynk(*auth)
 
 	if err := app.Connect(); err != nil {
 		slog.Fatalln(err)

@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
 	"runtime"
 	"strings"
@@ -14,7 +15,7 @@ import (
 	slog "github.com/OloloevReal/go-simple-log"
 )
 
-const Version = "0.0.4"
+const Version = "0.0.5"
 
 type Blynk struct {
 	APIkey          string
@@ -31,16 +32,15 @@ type Blynk struct {
 	lock            sync.Mutex
 	ssl             bool
 	cancel          chan bool
+	readers         map[uint]func(uint, io.Writer)
+	writers         map[uint]func(uint, io.Reader)
+	recvMsg         chan []byte
 }
 
-func NewBlynk(APIkey string, SSL bool) *Blynk {
-	Port := 443
-	if !SSL {
-		Port = 80
-	}
+func NewBlynk(APIkey string) *Blynk {
 	return &Blynk{APIkey: APIkey,
 		server:          "blynk-cloud.com",
-		port:            Port,
+		port:            443,
 		conn:            nil,
 		msgID:           0,
 		processingUsing: false,
@@ -49,8 +49,20 @@ func NewBlynk(APIkey string, SSL bool) *Blynk {
 		timeout:         time.Millisecond * 50,
 		timeoutMAX:      time.Second * 5,
 		lock:            sync.Mutex{},
-		ssl:             SSL,
+		ssl:             true,
 		cancel:          make(chan bool, 1),
+		writers:         make(map[uint]func(uint, io.Reader)),
+		readers:         make(map[uint]func(uint, io.Writer)),
+		recvMsg:         make(chan []byte, 10),
+	}
+}
+
+func (g *Blynk) SetUseSSL(ssl bool) {
+	g.ssl = ssl
+	if !ssl {
+		g.port = 80
+	} else {
+		g.port = 443
 	}
 }
 
@@ -82,8 +94,31 @@ func (g *Blynk) printLogo() {
 
 
 `
-	//fmt.Printf(logo, Version, runtime.GOOS)
 	slog.Printf(logo, Version, runtime.GOOS)
+}
+
+func (g *Blynk) AddReaderHandler(pin uint, fn func(pin uint, writer io.Writer)) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	g.readers[pin] = fn
+}
+
+func (g *Blynk) DeleteReaderHandler(pin uint) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	delete(g.readers, pin)
+}
+
+func (g *Blynk) AddWriterHandler(pin uint, fn func(pin uint, reader io.Reader)) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	g.writers[pin] = fn
+}
+
+func (g *Blynk) DeleteWriterHandler(pin uint) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	delete(g.writers, pin)
 }
 
 func (g *Blynk) Connect() error {
@@ -147,6 +182,7 @@ func (g *Blynk) Processing() {
 	g.processingUsing = true
 	defer func() { g.processingUsing = false }()
 	go g.keepAlive()
+	go g.processor()
 	g.receiver()
 }
 
@@ -161,16 +197,16 @@ func (g *Blynk) getMessageID() uint16 {
 }
 
 func (g *Blynk) auth() error {
-	_, err := g.send(BLYNK_CMD_HW_LOGIN, g.APIkey)
+	_, err := g.sendString(BLYNK_CMD_HW_LOGIN, g.APIkey)
 	if err != nil {
 		return err
 	}
 
-	response, err := g.receive(g.timeoutMAX)
+	response, err := g.receiveMessage(g.timeoutMAX)
 	if err != nil {
 		return err
 	}
-	//log.Printf("Auth: response: %v", response)
+
 	if response != nil && (response.MessageId != g.msgID || response.Command != BLYNK_CMD_RESPONSE || response.Length != BLYNK_SUCCESS) {
 		return fmt.Errorf("auth: failed, message id-%d, code-%d", response.MessageId, response.Length)
 	}
@@ -178,11 +214,11 @@ func (g *Blynk) auth() error {
 }
 
 func (g *Blynk) sendInternal() error {
-	if _, err := g.send(BLYNK_CMD_INTERNAL, g.formatInternal()); err != nil {
+	if _, err := g.sendString(BLYNK_CMD_INTERNAL, g.formatInternal()); err != nil {
 		return err
 	}
 
-	resp, err := g.receive(g.timeoutMAX)
+	resp, err := g.receiveMessage(g.timeoutMAX)
 	if err != nil {
 		return err
 	}
@@ -218,23 +254,29 @@ func (g *Blynk) keepAlive() {
 }
 
 func (g *Blynk) VirtualWrite(pin int, value string) error {
-	b := BlynkBody{}
-	b.AddString("vw")
-	b.AddInt(pin)
-	b.AddString(value)
+	msg := BlynkMessage{}
+	msg.Head.Command = BLYNK_CMD_HARDWARE
+	msg.Head.MessageId = g.getMessageID()
+	msg.Body.AddString("vw")
+	msg.Body.AddInt(pin)
+	msg.Body.AddString(value)
+	msg.Head.Length = msg.Body.Len()
 
-	if _, err := g.send(BLYNK_CMD_HARDWARE, b.String()); err != nil {
+	if _, err := g.sendMessage(msg); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (g *Blynk) VirtualRead(pins ...int) error {
-	b := BlynkBody{}
-	b.AddString("vr")
-	b.AddInt(pins...)
+	msg := BlynkMessage{}
+	msg.Head.Command = BLYNK_CMD_HARDWARE_SYNC
+	msg.Head.MessageId = g.getMessageID()
+	msg.Body.AddString("vr")
+	msg.Body.AddInt(pins...)
+	msg.Head.Length = msg.Body.Len()
 
-	if _, err := g.send(BLYNK_CMD_HARDWARE_SYNC, b.String()); err != nil {
+	if _, err := g.sendMessage(msg); err != nil {
 		return err
 	}
 
@@ -242,23 +284,29 @@ func (g *Blynk) VirtualRead(pins ...int) error {
 }
 
 func (g *Blynk) DigitalWrite(pin int, value bool) error {
-	b := BlynkBody{}
-	b.AddString("dw")
-	b.AddInt(pin)
-	b.AddBool(value)
+	msg := BlynkMessage{}
+	msg.Head.Command = BLYNK_CMD_HARDWARE
+	msg.Head.MessageId = g.getMessageID()
+	msg.Body.AddString("dw")
+	msg.Body.AddInt(pin)
+	msg.Body.AddBool(value)
+	msg.Head.Length = msg.Body.Len()
 
-	if _, err := g.send(BLYNK_CMD_HARDWARE, b.String()); err != nil {
+	if _, err := g.sendMessage(msg); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (g *Blynk) DigitalRead(pin int) error {
-	b := BlynkBody{}
-	b.AddString("dr")
-	b.AddInt(pin)
+	msg := BlynkMessage{}
+	msg.Head.Command = BLYNK_CMD_HARDWARE_SYNC
+	msg.Head.MessageId = g.getMessageID()
+	msg.Body.AddString("dr")
+	msg.Body.AddInt(pin)
+	msg.Head.Length = msg.Body.Len()
 
-	if _, err := g.send(BLYNK_CMD_HARDWARE_SYNC, b.String()); err != nil {
+	if _, err := g.sendMessage(msg); err != nil {
 		return err
 	}
 
@@ -266,7 +314,7 @@ func (g *Blynk) DigitalRead(pin int) error {
 }
 
 func (g *Blynk) Notify(msg string) error {
-	_, err := g.send(BLYNK_CMD_NOTIFY, msg)
+	_, err := g.sendString(BLYNK_CMD_NOTIFY, msg)
 	if err != nil {
 		return fmt.Errorf("send notify failed, %s", err.Error())
 	}
@@ -276,7 +324,7 @@ func (g *Blynk) Notify(msg string) error {
 		return err
 	}
 
-	bh, err := g.receive(time.Duration(time.Second * 5))
+	bh, err := g.receiveMessage(time.Duration(time.Second * 5))
 	if err != nil {
 		return err
 	}
@@ -288,15 +336,16 @@ func (g *Blynk) Notify(msg string) error {
 }
 
 func (g *Blynk) Tweet(msg string) error {
-	_, err := g.send(BLYNK_CMD_TWEET, msg)
+	_, err := g.sendString(BLYNK_CMD_TWEET, msg)
 	if err != nil {
 		return fmt.Errorf("send tweet failed, %s", err.Error())
 	}
+
 	if g.processingUsing {
 		return err
 	}
 
-	bh, err := g.receive(time.Duration(time.Second * 5))
+	bh, err := g.receiveMessage(time.Duration(time.Second * 5))
 	if err != nil {
 		return err
 	}
@@ -309,19 +358,22 @@ func (g *Blynk) Tweet(msg string) error {
 
 func (g *Blynk) EMail(to string, subject string, msg string) error {
 
-	b := new(BlynkBody)
-	b.AddString(to)
-	b.AddString(subject)
-	b.AddString(msg)
+	bmsg := BlynkMessage{}
+	bmsg.Head.MessageId = g.getMessageID()
+	bmsg.Head.Command = BLYNK_CMD_EMAIL
+	bmsg.Body.AddString(to)
+	bmsg.Body.AddString(subject)
+	bmsg.Body.AddString(msg)
+	bmsg.Head.Length = bmsg.Body.Len()
 
-	_, err := g.send(BLYNK_CMD_EMAIL, b.String())
+	_, err := g.sendMessage(bmsg)
 
 	//if receiver is using dont use standalone receive func
 	if g.processingUsing {
 		return err
 	}
 
-	bh, err := g.receive(time.Duration(time.Second * 5))
+	bh, err := g.receiveMessage(time.Duration(time.Second * 5))
 	if err != nil {
 		return err
 	}
@@ -339,6 +391,7 @@ func (g *Blynk) Stop() error {
 	slog.Printf("[DEBUG] Sending to cancle channel")
 	g.conn.SetReadDeadline(time.Now().Add(time.Millisecond * 500))
 	close(g.cancel)
+	close(g.recvMsg)
 	time.Sleep(time.Second * 1)
 	return g.Disconnect()
 }

@@ -16,8 +16,9 @@ func main() {
 	_ = email
 	flag.Parse()
 
-	app := blynk.NewBlynk(*auth, true)
-	app.SetServer("blynk-cloud.com", 80, false)
+	app := blynk.NewBlynk(*auth)
+	app.SetUseSSL(false)
+	//app.SetServer("blynk-cloud.com", 80, false)
 	app.DisableLogo(false)
 	app.SetDebug()
 
@@ -32,4 +33,5 @@ func main() {
 	if err := app.VirtualWrite(12, "4.567"); err != nil {
 		slog.Printf("[ERROR] Send command failed")
 	}
+
 }

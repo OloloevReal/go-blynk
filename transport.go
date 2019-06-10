@@ -6,60 +6,44 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"time"
 
 	slog "github.com/OloloevReal/go-simple-log"
 )
 
-func (g *Blynk) sendCommand(cmd BlynkCommand) (uint16, error) {
-	return g.send(cmd, "")
+func (g *Blynk) sendMessage(msg BlynkMessage) (uint16, error) {
+	if err := g.sendBytes(msg.GetBytes()); err != nil {
+		return 0, err
+	}
+	return msg.Head.MessageId, nil
 }
 
-func (g *Blynk) send(cmd BlynkCommand, data string) (uint16, error) {
+func (g *Blynk) sendCommand(cmd BlynkCommand) (uint16, error) {
+	msg := BlynkMessage{}
+	msg.Head.Command = cmd
+	msg.Head.MessageId = g.getMessageID()
+	msg.Head.Length = 0
+	return g.sendMessage(msg)
+}
+
+func (g *Blynk) sendString(cmd BlynkCommand, data string) (uint16, error) {
 	if g.conn == nil {
 		return 0, fmt.Errorf("send: conn *net.TCPConn is nil")
 	}
 
-	var writer bytes.Buffer
-	msg := BlynkHead{}
-	msg.Command = cmd
-	msg.MessageId = g.getMessageID()
+	msg := BlynkMessage{}
+	msg.Head.Command = cmd
+	msg.Head.MessageId = g.getMessageID()
+	msg.Body.AddString(data)
+	msg.Head.Length = msg.Body.Len()
 
-	msg.Length = uint16(len(data))
-
-	err := binary.Write(&writer, binary.BigEndian, msg)
+	err := g.sendBytes(msg.GetBytes())
 	if err != nil {
-		return msg.MessageId, err
+		return msg.Head.MessageId, err
 	}
 
-	if len(data) > 0 {
-		err = binary.Write(&writer, binary.BigEndian, []byte(data))
-		if err != nil {
-			return msg.MessageId, err
-		}
-	}
-
-	err = g.sendBytes(writer.Bytes())
-	if err != nil {
-		return msg.MessageId, err
-	}
-
-	return msg.MessageId, nil
-}
-
-func (g *Blynk) sendPacket(cmd *BlynkHead) error {
-	var writer bytes.Buffer
-	err := binary.Write(&writer, binary.BigEndian, cmd)
-	if err != nil {
-		return err
-	}
-
-	err = g.sendBytes(writer.Bytes())
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return msg.Head.MessageId, nil
 }
 
 func (g *Blynk) sendBytes(buf []byte) error {
@@ -67,12 +51,30 @@ func (g *Blynk) sendBytes(buf []byte) error {
 	return err
 }
 
-func (g *Blynk) receive(timeout time.Duration) (*BlynkHead, error) {
+func (g *Blynk) receiveMessage(timeout time.Duration) (*BlynkHead, error) {
+	buf, err := g.receive(timeout)
+	if err != nil {
+		return nil, err
+	}
+	resp := new(BlynkHead)
+
+	bufReader := bytes.NewBuffer(buf)
+
+	err = binary.Read(bufReader, binary.BigEndian, resp)
+	if err != nil {
+		slog.Printf("[DEBUG] receiveMessage: binary read error, ", err.Error())
+		return nil, err
+	}
+
+	return resp, nil
+
+}
+
+func (g *Blynk) receive(timeout time.Duration) ([]byte, error) {
 	if g == nil || g.conn == nil {
 		return nil, fmt.Errorf("receive: *Blynk or *net.Conn is nil")
 	}
 
-	resp := new(BlynkHead)
 	g.conn.SetDeadline(time.Now().Add(timeout))
 	defer g.conn.SetDeadline(time.Time{})
 
@@ -93,15 +95,7 @@ func (g *Blynk) receive(timeout time.Duration) (*BlynkHead, error) {
 		return nil, err
 	}
 
-	bufReader := bytes.NewBuffer(buf)
-
-	err = binary.Read(bufReader, binary.BigEndian, resp)
-	if err != nil {
-		slog.Printf("[DEBUG] receive: binary read error, ", err.Error())
-		return nil, err
-	}
-
-	return resp, nil
+	return buf, nil
 }
 
 func (g *Blynk) receiver() error {
@@ -129,31 +123,13 @@ func (g *Blynk) receiver() error {
 					break
 				}
 				if err != nil {
-					slog.Printf("[DEBUG] receiver: error, %s", err.Error())
+					slog.Printf("[ERROR] receiver: error, %s", err.Error())
 					return err
 				}
-				//log.Printf("Receiver: % x - %s", buf[:cntBytes], string(buf[:cntBytes]))
-				br, err := g.parseResponce(buf[:cntBytes])
-				if err != nil {
-					slog.Printf("[DEBUG] receiver: error parsing, %s", err.Error())
-				}
-
-				for _, resp := range br {
-
-					switch resp.Command {
-					case BLYNK_CMD_HARDWARE:
-						if resp.Command == BLYNK_CMD_HARDWARE {
-							if g.OnReadFunc != nil {
-								g.OnReadFunc(resp)
-							}
-						} else {
-							slog.Printf("[DEBUG] Receiver: %v", resp)
-						}
-					case BLYNK_CMD_PING:
-						g.sendPingResponse(resp.MessageId)
-					}
-
-				}
+				//slog.Printf("[DEBUG] receiver send: % x", buf[:cntBytes])
+				bufToSend := make([]byte, cntBytes)
+				copy(bufToSend, buf[:cntBytes])
+				g.recvMsg <- bufToSend
 			}
 		}
 	}
@@ -161,19 +137,80 @@ func (g *Blynk) receiver() error {
 	return nil
 }
 
+func (g *Blynk) processor() {
+	slog.Printf("Processor: started")
+	defer slog.Printf("Processor: finished")
+	for {
+		select {
+		case <-g.cancel:
+			slog.Printf("[DEBUG] Processor: Stop received")
+			return
+		case buf := <-g.recvMsg:
+			{
+				//slog.Printf("[DEBUG] processor received msg: % x", buf)
+				br, err := g.parseResponce(buf)
+				if err != nil {
+					slog.Printf("[ERROR] processor: error parsing, %s", err.Error())
+				}
+
+				for _, resp := range br {
+					switch resp.Command {
+					case BLYNK_CMD_HARDWARE:
+						if g.OnReadFunc != nil {
+							g.OnReadFunc(resp)
+						}
+
+						switch resp.Values[0] {
+						case "vr":
+							pin, _ := strconv.Atoi(resp.Values[1])
+							if reader, ok := g.readers[uint(pin)]; !ok {
+								slog.Printf("[DEBUG] failed to find reader, Pin: %d", pin)
+							} else {
+								var buf bytes.Buffer
+								reader(uint(pin), &buf)
+								slog.Printf("[DEBUG] reader result: %s", buf.String())
+								g.VirtualWrite(pin, buf.String())
+							}
+						case "vw":
+							pin, _ := strconv.Atoi(resp.Values[1])
+							if writer, ok := g.writers[uint(pin)]; !ok {
+								slog.Printf("[DEBUG] failed to find reader, Pin: %d", pin)
+							} else {
+								var buf bytes.Buffer
+								buf.WriteString(resp.Values[2])
+								slog.Printf("[DEBUG] value: %s", resp.Values[2])
+								writer(uint(pin), &buf)
+							}
+						}
+
+					case BLYNK_CMD_RESPONSE:
+
+					case BLYNK_CMD_PING:
+						g.sendPingResponse(resp.MessageId)
+					default:
+						slog.Printf("[ERROR] Processor received unhandled msg: %v", resp)
+					}
+				}
+
+			}
+		}
+	}
+
+}
+
 func (g *Blynk) parseResponce(buf []byte) ([]*BlynkRespose, error) {
 	var resps []*BlynkRespose
 	var resp *BlynkRespose
-	flag_start := 0
+	flagStart := 0
 	if len(buf) >= 5 {
-		for len(buf) >= flag_start+5 {
+		for len(buf) >= flagStart+5 {
 			resp = new(BlynkRespose)
-			resp.parseHead(buf[flag_start : flag_start+5])
+			resp.parseHead(buf[flagStart : flagStart+5])
 			lenBody := int(resp.Status)
 
 			if resp.Command == BLYNK_CMD_HARDWARE && resp.Status > 0 && resp.Status < 1024 {
-				if len(buf) >= flag_start+5+lenBody {
-					resp.parseBody(buf[flag_start+5 : flag_start+5+lenBody])
+				if len(buf) >= flagStart+5+lenBody {
+					resp.parseBody(buf[flagStart+5 : flagStart+5+lenBody])
 				} else {
 					slog.Printf("[ERROR] parseResponce: failed parse body, length of buf less than flag")
 				}
@@ -181,7 +218,7 @@ func (g *Blynk) parseResponce(buf []byte) ([]*BlynkRespose, error) {
 			}
 
 			resps = append(resps, resp)
-			flag_start += 5 + lenBody
+			flagStart += 5 + lenBody
 		}
 	}
 
@@ -189,22 +226,19 @@ func (g *Blynk) parseResponce(buf []byte) ([]*BlynkRespose, error) {
 }
 
 func (g *Blynk) sendPing() error {
-
 	if _, err := g.sendCommand(BLYNK_CMD_PING); err != nil {
 		return err
 	}
-
 	return nil
 }
 
 func (g *Blynk) sendPingResponse(id uint16) error {
+	msg := BlynkMessage{}
+	msg.Head.Command = BLYNK_CMD_RESPONSE
+	msg.Head.MessageId = id
+	msg.Head.Length = BLYNK_SUCCESS
 
-	cmd := &BlynkHead{
-		Command:   BLYNK_CMD_RESPONSE,
-		MessageId: id,
-		Length:    BLYNK_SUCCESS,
-	}
-	if err := g.sendPacket(cmd); err != nil {
+	if _, err := g.sendMessage(msg); err != nil {
 		return err
 	}
 

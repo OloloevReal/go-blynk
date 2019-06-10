@@ -15,8 +15,8 @@ func main() {
 	auth := flag.String("auth", "", "set -auth=blynk_token")
 	email := flag.String("email", "", "set -email=someemail@gmail.com")
 	flag.Parse()
-
-	app := blynk.NewBlynk(*auth, true)
+	slog.Println(*email)
+	app := blynk.NewBlynk(*auth)
 
 	if err := app.Connect(); err != nil {
 		slog.Fatalln(err)

@@ -24,7 +24,7 @@ func main() {
 	_ = email
 	flag.Parse()
 
-	app := blynk.NewBlynk(*auth, true)
+	app := blynk.NewBlynk(*auth)
 
 	go func() {
 		stop := make(chan os.Signal, 1)
