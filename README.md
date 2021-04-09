@@ -1,5 +1,7 @@
 # go-blynk
 Blynk library implementation for Go language
+
+## SSL cert problem on blynk server side, use disable ssl. **[issue](https://community.blynk.cc/t/esp8266-ssl-connections-down-using-blynk-wifimanager-esp32-works-fine-non-ssl-8266-works-fine/52144/5?u=vshymanskyy)**
 __________
 ## What is Blynk?
 Blynk provides **iOS** and **Android** apps to control any hardware **over the Internet** or **directly using Bluetooth**.
